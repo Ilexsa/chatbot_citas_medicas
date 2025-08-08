@@ -8,6 +8,9 @@ class Medicos extends Model
 {
     //
 
+    public const ACTIVO = 1;
+    public const INACTIVO = 0;
+
     public $primaryKey = 'id_medico';
     public $timestamps = false;
     public $table = 'medicos';

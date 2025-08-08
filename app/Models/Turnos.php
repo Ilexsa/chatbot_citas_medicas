@@ -12,6 +12,11 @@ class Turnos extends Model
     public $timestamps = false;
     public $table = 'turnos';
 
+    protected $casts = [
+        'hora_ini' => 'datetime:H:i',
+        'hora_fin' => 'datetime:H:i',
+    ];
+
     public $fillable = [
         'id_dia',
         'id_consultorio',
