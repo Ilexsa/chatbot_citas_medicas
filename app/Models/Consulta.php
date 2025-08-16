@@ -6,6 +6,13 @@ use Illuminate\Database\Eloquent\Model;
 
 class Consulta extends Model
 {
+
+    const AGENDADA = 1;
+    const CANCELADA = 2;
+    const ATENDIDA = 3;
+    const FACTURADA = 4;
+    const PENDIENTE = 5;
+
     /**
      * El nombre de la tabla asociada con el modelo.
      *
@@ -35,7 +42,6 @@ class Consulta extends Model
     protected $fillable = [
         'id_empresa',
         'id_localidad',
-        // 'id_consulta' no se incluye porque es la clave primaria y generalmente no es asignable masivamente.
         'turno',
         'id_medico',
         'id_especialidad',
