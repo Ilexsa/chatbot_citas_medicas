@@ -7,5 +7,10 @@ Route::get('/', function () {
     return view('welcome');
 });
 
+Route::get('/test-chat', function () {
+    $telefono = request('telefono', '123456789');
+    $mensaje = request('mensaje', 'Hola');
 
-Route::get('/webhook', [WebhookController::class, 'handleWebhook']);
+    $controller = new \App\Http\Controllers\ChatBotController();
+    return $controller->chatbot($telefono, $mensaje);
+});

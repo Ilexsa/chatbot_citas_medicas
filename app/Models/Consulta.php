@@ -48,7 +48,7 @@ class Consulta extends Model
         'hora_ini',
         'hora_fin',
         'estado',
-        'Id_Paciente',
+        'id_paciente',
         'fecha_atencion',
         'fecha',
         'hora',
@@ -102,4 +102,19 @@ class Consulta extends Model
         'id_usuario_open',
         'fecha_open',
     ];
+
+    public function medico()
+    {
+        return $this->belongsTo(Medicos::class, 'id_medico');
+    }
+
+    public function paciente()
+    {
+        return $this->belongsTo(Pacientes::class, 'id_paciente');
+    }
+
+    public function especialidad()
+    {
+        return $this->belongsTo(Especialidades::class, 'id_especialidad');
+    }
 }

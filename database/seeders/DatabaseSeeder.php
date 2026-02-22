@@ -13,11 +13,10 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
-
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
+        $this->call([
+            MedicosSeeder::class,    // 1ro: Crea los médicos (con sus especialidades)
+            TurnosSeeder::class,     // 2do: Crea los turnos extrayendo la data de los médicos
+            ConsultasSeeder::class,  // 3ro: Crea las consultas extrayendo la data de los médicos
         ]);
     }
 }

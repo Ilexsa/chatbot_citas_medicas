@@ -19,6 +19,10 @@ return Application::configure(basePath: dirname(__DIR__))
             Route::middleware('web')
                 ->prefix('turnos')
                 ->group(base_path('routes/turnos/principal.php'));
+
+            Route::middleware('web')
+                ->prefix('consultas')
+                ->group(base_path('routes/consultas/principal.php'));
         }
     )
     ->withMiddleware(function (Middleware $middleware): void {

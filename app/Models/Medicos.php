@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use App\Models\Especialidades;
 
 class Medicos extends Model
 {
@@ -24,4 +25,9 @@ class Medicos extends Model
         'id_especialidad',
         'estado'
     ];
+
+    public function especialidad()
+    {
+        return $this->belongsTo(Especialidades::class, 'id_especialidad');
+    }
 }

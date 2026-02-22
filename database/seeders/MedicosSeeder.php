@@ -11,18 +11,57 @@ class MedicosSeeder extends Seeder
     public function run()
     {
         $nombresMasculinos = [
-            'Juan', 'Carlos', 'Luis', 'Pedro', 'Andrés', 'Miguel', 'Jorge', 'Fernando',
-            'Ricardo', 'Daniel', 'Roberto', 'Santiago', 'Felipe', 'Alejandro', 'Rafael'
+            'Juan',
+            'Carlos',
+            'Luis',
+            'Pedro',
+            'Andrés',
+            'Miguel',
+            'Jorge',
+            'Fernando',
+            'Ricardo',
+            'Daniel',
+            'Roberto',
+            'Santiago',
+            'Felipe',
+            'Alejandro',
+            'Rafael'
         ];
 
         $nombresFemeninos = [
-            'María', 'Ana', 'Laura', 'Carolina', 'Sofía', 'Isabella', 'Valentina', 'Camila',
-            'Gabriela', 'Patricia', 'Diana', 'Lucía', 'Ximena', 'Paula', 'Adriana'
+            'María',
+            'Ana',
+            'Laura',
+            'Carolina',
+            'Sofía',
+            'Isabella',
+            'Valentina',
+            'Camila',
+            'Gabriela',
+            'Patricia',
+            'Diana',
+            'Lucía',
+            'Ximena',
+            'Paula',
+            'Adriana'
         ];
 
         $apellidos = [
-            'Gómez', 'Rodríguez', 'González', 'López', 'Martínez', 'Pérez', 'Sánchez',
-            'Ramírez', 'Torres', 'Flórez', 'Hernández', 'Díaz', 'Moreno', 'Muñoz', 'Rojas'
+            'Gómez',
+            'Rodríguez',
+            'González',
+            'López',
+            'Martínez',
+            'Pérez',
+            'Sánchez',
+            'Ramírez',
+            'Torres',
+            'Flórez',
+            'Hernández',
+            'Díaz',
+            'Moreno',
+            'Muñoz',
+            'Rojas'
         ];
 
         for ($i = 0; $i < 50; $i++) {
@@ -36,7 +75,8 @@ class MedicosSeeder extends Seeder
                 'apellidos' => $apellidos[array_rand($apellidos)] . ' ' . $apellidos[array_rand($apellidos)],
                 'sexo' => $sexo,
                 'fecha_nacimiento' => $this->generarFechaNacimiento(),
-                'id_especialidad' => rand(1, 20),
+                // Ajustado a 41 para que coincida con la lógica de tu ConsultasSeeder original
+                'id_especialidad' => rand(1, 41),
                 'estado' => rand(0, 1) ? Medicos::ACTIVO : Medicos::INACTIVO
             ];
 

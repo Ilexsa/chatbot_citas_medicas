@@ -35,4 +35,27 @@ class MedicosController extends Controller
             'data' => $medicos
         ]);
     }
+
+    public function medicosEspecialidad($idEspecialidad)
+    {
+        $medicos = Medicos::selectRaw("id_medico, identificacion, CONCAT(nombres, ' ', apellidos) as nombre_completo,  nombre_especialidad, medicos.estado")
+            ->join('especialidades', 'medicos.id_especialidad', '=', 'especialidades.id_especialidad')
+            ->where('medicos.estado', Medicos::ACTIVO)
+            ->where('medicos.id_especialidad', $idEspecialidad)
+            ->get();
+
+        $estado = 'success';
+        $mensaje = 'Listado de médicos por especialidad obtenido correctamente';
+
+        if ($medicos == null) {
+            $estado = 'error';
+            $mensaje = 'No se encontraron médicos para la especialidad indicada';
+        }
+
+        return response()->json([
+            'estado' => $estado,
+            'mensaje' => $mensaje,
+            'data' => $medicos
+        ]);
+    }
 }

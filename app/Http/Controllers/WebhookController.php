@@ -35,15 +35,15 @@ class WebhookController extends Controller
                 'mensaje' => $e->getMessage(),
             ], 500);
         }
-        Log::info('Llego el webhook', $request->all());
+        // Log::info('Llego el webhook', $request->all());
     }
 
     public function acctionWebhook(Request $request)
     {
         try {
+            // Log::info('Llego el webhook', $request->all());
             $bodyContent = json_decode($request->getContent(), true);
             $datos = $bodyContent['entry'][0]['changes'][0]['value'];
-            $valorChat = null;
             if (isset($datos['messages'][0])) { // Usa isset para más seguridad
                 $messageData = $datos['messages'][0];
                 $metadata = $datos['metadata']; // Asumiendo que metadata está al mismo nivel que messages
@@ -131,6 +131,49 @@ class WebhookController extends Controller
                         $valorChat = $interactiveData['list_reply']['id'] ?? 'error';
                         $header = 'N/A';
                         $tipo_header = 'N/A';
+                    } elseif (isset($interactiveData['nfm_reply'])) {
+                        // Respuesta de un Flow
+                        $nfmReply = $interactiveData['nfm_reply'];
+                        $responseJson = json_decode($nfmReply['response_json'], true);
+                        $mensaje = $nfmReply['body'] ?? 'Formulario enviado';
+                        $header = 'FLOW';
+                        $tipo_header = 'FLOW';
+                        $isFlowResponse = true;
+
+                        // Log para depuración de keys
+                        Log::info("Webhook nfm_reply recibido:", $responseJson);
+
+                        // Intentar registrar al paciente con los datos del Flow
+                        // Mapeo de campos según la plantilla del usuario: nombre, apellidos, Correo, Identificacion, rut
+                        $identificacion = $responseJson['Identificacion'] ?? ($responseJson['identificacion'] ?? null);
+                        $nombres = $responseJson['nombre'] ?? ($responseJson['nombres'] ?? null);
+                        $apellidos = $responseJson['apellidos'] ?? ($responseJson['apellido'] ?? null);
+                        $rut = $responseJson['rut'] ?? '';
+                        $correo = $responseJson['Correo'] ?? ($responseJson['correo'] ?? null); // Solo para log o futuro uso
+
+                        if ($identificacion && $nombres && $apellidos) {
+                            try {
+                                $paciente = \App\Models\Pacientes::updateOrCreate(
+                                    ['identificacion' => $identificacion],
+                                    [
+                                        'nombres' => strtoupper($nombres),
+                                        'apellidos' => strtoupper($apellidos),
+                                        'rut' => $rut,
+                                        'estado' => \App\Models\Pacientes::ACTIVO,
+                                        'tipo_documento' => '1',
+                                    ]
+                                );
+                                Log::info("Paciente registrado/actualizado desde Flow: ID $identificacion. Correo: $correo");
+                                // Mensaje simulado para que el Bot sepa que ya se registró
+                                $mensaje = "He completado el registro exitosamente. Mi identificación es $identificacion.";
+                            } catch (Exception $e) {
+                                Log::error("Error guardando paciente desde Flow: " . $e->getMessage());
+                                $mensaje = "Hubo un error guardando mis datos del formulario.";
+                            }
+                        } else {
+                            Log::warning("Datos incompletos en Flow: ", $responseJson);
+                            $mensaje = "Envié el formulario pero faltaron datos.";
+                        }
                     }
                 } else {
                     // Otros tipos de mensaje (location, contacts, etc.)
@@ -143,7 +186,7 @@ class WebhookController extends Controller
                 $mensajeParaTablaGeneral = $isFlowResponse ? "[Respuesta de Flow recibida]" : $mensaje;
 
                 Mensajes::updateOrCreate(
-                    ["id_mensaje" => $idMensaje],
+                    ["wamid" => $idMensaje],
                     [
                         "tipo" => $tipo,
                         "de" => $para,    // Quién envía (usuario)
@@ -162,7 +205,7 @@ class WebhookController extends Controller
                 // Lógica de ChatBot (si aplica y no es una respuesta de Flow que ya manejaste)
                 if ($estado == 'received') { // O el estado apropiado
                     $chatbotController = new ChatbotController();
-                    $chatbotController->chatBot($para, $mensaje, $valorChat);
+                    $chatbotController->chatBot($para, $mensaje);
                 }
             }
 
@@ -175,7 +218,7 @@ class WebhookController extends Controller
                 $idMensaje = $datos['statuses'][0]['id'] ?? 'Que pasa';
                 $estado = $datos['statuses'][0]['status'] ?? 'sent';
 
-                $validarMensajeEnviado = Mensajes::firstWhere('id_mensaje', $idMensaje);
+                $validarMensajeEnviado = Mensajes::firstWhere('wamid', $idMensaje);
                 if ($validarMensajeEnviado) {
                     $actualizarvalidarMensajeEnviado = $validarMensajeEnviado->update(["estado" => $estado]);
                 } else {

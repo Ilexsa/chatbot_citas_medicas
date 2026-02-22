@@ -13,3 +13,4 @@ Route::get('/testei', function () {
 });
 
 Route::get('/webhook', [WebhookController::class, 'handleWebhook']);
+Route::post('/webhook', [WebhookController::class, 'acctionWebhook']);

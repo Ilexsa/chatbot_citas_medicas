@@ -2,9 +2,9 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 use App\Models\Consulta;
+use App\Models\Medicos; // IMPORTANTE: Importar el modelo de Medicos
 use Carbon\Carbon;
 use Faker\Factory as Faker;
 
@@ -15,33 +15,41 @@ class ConsultasSeeder extends Seeder
      */
     public function run(): void
     {
-        // Inicializamos Faker para generar datos de prueba
         $faker = Faker::create('es_ES');
+
+        $medicos = Medicos::all();
+
+        if ($medicos->isEmpty()) {
+            $this->command->info('No hay médicos creados. Ejecuta MedicosSeeder primero.');
+            return;
+        }
 
         for ($i = 0; $i < 50; $i++) {
 
+            // Seleccionamos un médico aleatorio de la colección
+            $medicoSeleccionado = $medicos->random();
+
             $datosBase = [
-                'id_empresa' => $faker->numberBetween(1, 3),
-                'id_localidad' => $faker->numberBetween(1, 5),
-                'turno' => $faker->numberBetween(1, 2),
-                'id_medico' => $faker->numberBetween(1, 50),
-                'id_especialidad' => $faker->numberBetween(1, 41),
-                'Id_Paciente' => $faker->numerify('##########'),
-                'id_consultorio' => $faker->numberBetween(1, 20),
-                'fecha_add' => Carbon::now(),
-                'id_usuario_add' => 'SEEDER',
+                'id_empresa'      => $faker->numberBetween(1, 3),
+                'id_localidad'    => $faker->numberBetween(1, 5),
+                'turno'           => $faker->numberBetween(1, 2),
+
+                'id_medico'       => $medicoSeleccionado->id_medico,
+                'id_especialidad' => $medicoSeleccionado->id_especialidad,
+
+                'id_paciente'     => $faker->numerify('##########'),
+                'id_consultorio'  => $faker->numberBetween(1, 20),
+                'fecha_add'       => Carbon::now(),
+                'id_usuario_add'  => 'SEEDER',
             ];
 
             $estados = [Consulta::AGENDADA, Consulta::CANCELADA, Consulta::ATENDIDA, Consulta::FACTURADA];
             $estadoSeleccionado = $faker->randomElement($estados);
 
             $datosBase['estado'] = $estadoSeleccionado;
-
             $datosEspecificos = [];
 
             switch ($estadoSeleccionado) {
-
-
                 case Consulta::AGENDADA:
                     $fechaCita = Carbon::now()->addDays($faker->numberBetween(1, 30));
                     $horaCita = $faker->time('H:i');

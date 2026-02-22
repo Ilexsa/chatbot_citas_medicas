@@ -12,6 +12,9 @@ class Turnos extends Model
     public $timestamps = false;
     public $table = 'turnos';
 
+    const ACTIVO = 'A';
+    const INACTIVO = 'I';
+
     protected $casts = [
         'hora_ini' => 'datetime:H:i',
         'hora_fin' => 'datetime:H:i',
@@ -24,6 +27,31 @@ class Turnos extends Model
         'id_especialidad',
         'hora_ini',
         'hora_fin',
-        'turno'
+        'turno',
+        'estado'
     ];
+
+    /**
+     * Un turno pertenece a un médico.
+     */
+    public function medico()
+    {
+        return $this->belongsTo(Medicos::class, 'id_medico');
+    }
+
+    /**
+     * Un turno pertenece a un consultorio.
+     */
+    public function consultorio()
+    {
+        return $this->belongsTo(Consultorios::class, 'id_consultorio');
+    }
+
+    /**
+     * Un turno pertenece a una especialidad.
+     */
+    public function especialidad()
+    {
+        return $this->belongsTo(Especialidades::class, 'id_especialidad');
+    }
 }
