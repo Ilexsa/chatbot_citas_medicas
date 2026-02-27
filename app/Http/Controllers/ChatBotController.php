@@ -15,12 +15,6 @@ class ChatBotController extends Controller
     {
         try {
             // Lógica para manejar la conversación del chatbot
-
-            // $intencion = $this->identificarIntecionIa($mensaje); // Ya no es necesario clasificar estrictamente antes si el LLM maneja todo.
-            // Pero mantenemos el log para debug
-            // Log::info('Intencion detectada: ' . $intencion);
-
-            // Enrutamos todo a responderSaludo (que ahora es el agente principal)
             $respuesta = $this->responderSaludo($telefonoUsuario, $mensaje);
 
             if (!empty($respuesta)) {
@@ -49,7 +43,6 @@ class ChatBotController extends Controller
                 try {
                     $response = Http::withHeaders($headers)->post($url, $body);
                     $responseData = $response->json();
-                    // Log::info('Respuesta de WhatsApp', [$responseData]);
 
                     // Guardar respuesta del Bot
                     if (isset($responseData['messages'][0]['id'])) {
@@ -74,7 +67,6 @@ class ChatBotController extends Controller
             ]);
         } catch (\Exception $e) {
             Log::error("Excepción general en ChatBotController@chatbot: " . $e->getMessage());
-            Log::error("Stack trace general: " . $e->getTraceAsString());
             return response()->json([
                 'respuesta' => "Lo siento, tuve un problema técnico. Intenta más tarde."
             ]);
@@ -83,7 +75,6 @@ class ChatBotController extends Controller
 
     public function identificarIntecionIa($mensaje)
     {
-        // Deprecated or kept for fallback.
         return 'CONSULTA_GENERAL';
     }
 
@@ -118,6 +109,39 @@ class ChatBotController extends Controller
                 'role' => 'user',
                 'parts' => [['text' => $mensaje]]
             ];
+        }
+
+        // ==========================================
+        // NUEVA LÓGICA: BUSCAR PACIENTE POR TELÉFONO
+        // ==========================================
+        $pacienteConocido = null;
+        try {
+            // Usamos los últimos 10 dígitos para evitar problemas con códigos de país (+57, etc)
+            $telefonoCorto = substr($telefonoUsuario, -10);
+            $pacienteConocido = \App\Models\Pacientes::where('estado', \App\Models\Pacientes::ACTIVO)
+                ->where(function ($q) use ($telefonoUsuario, $telefonoCorto) {
+                    $q->where('telefono', 'like', "%$telefonoCorto%")
+                        ->orWhere('telefono', 'like', "%$telefonoCorto%");
+                })->first();
+        } catch (\Exception $e) {
+            Log::warning("No se pudo buscar paciente por teléfono (posible falta de columna): " . $e->getMessage());
+        }
+
+        // Modificamos las instrucciones dependiendo de si conocemos al paciente
+        if ($pacienteConocido) {
+            $reglaIdentificacion = "
+            1. ¡EL USUARIO YA ESTÁ IDENTIFICADO! Su número de WhatsApp está vinculado en el sistema:
+               - Identificación (Cédula): {$pacienteConocido->identificacion}
+               - Nombres: {$pacienteConocido->nombres} {$pacienteConocido->apellidos}
+               REGLA CLAVE: NO LE PIDAS SU IDENTIFICACIÓN. Procede directamente con su solicitud y usa esta identificación para agendar o consultar sus citas.
+            2. Omite la herramienta 'validar_paciente' porque ya ha sido validado automáticamente.
+            ";
+        } else {
+            $reglaIdentificacion = "
+            1. AL INICIO DE LA CONVERSACIÓN: Si el usuario saluda o pide algo, TU PRIMERA ACCIÓN DEBE SER pedirle amablemente su número de identificación (cédula) para validar si está registrado. No ofrezcas servicios ni consultes turnos hasta tener su identificación.
+            2. Cuando el usuario te dé su identificación, usa INMEDIATAMENTE la herramienta 'validar_paciente'.
+            3. SI 'validar_paciente' devuelve PACIENTE_NO_ENCONTRADO: USA la herramienta 'enviar_formulario_registro' para enviarle el formulario de registro. NO le pidas sus datos por chat (nombres, etc.), usa el formulario.
+            ";
         }
 
         $tools = [
@@ -204,6 +228,33 @@ class ChatBotController extends Controller
                             ],
                             'required' => []
                         ]
+                    ],
+                    [
+                        'name' => 'enviar_lista_medicos',
+                        'description' => 'Envía una lista interactiva de médicos a WhatsApp para que el usuario seleccione. Úsala SIEMPRE para mostrar médicos encontrados.',
+                        'parameters' => [
+                            'type' => 'OBJECT',
+                            'properties' => [
+                                'header' => ['type' => 'STRING', 'description' => 'Encabezado de la lista (máximo 60 caracteres)'],
+                                'body' => ['type' => 'STRING', 'description' => 'Mensaje principal (instrucciones para el usuario)'],
+                                'footer' => ['type' => 'STRING', 'description' => 'Pie de página (máximo 60 caracteres)'],
+                                'button_text' => ['type' => 'STRING', 'description' => 'Texto del botón (ej: "Ver Médicos", máx 20 caracteres)'],
+                                'medicos' => [
+                                    'type' => 'ARRAY',
+                                    'description' => 'Lista de médicos a mostrar',
+                                    'items' => [
+                                        'type' => 'OBJECT',
+                                        'properties' => [
+                                            'id' => ['type' => 'STRING', 'description' => 'ID interno del médico'],
+                                            'titulo' => ['type' => 'STRING', 'description' => 'Nombre del médico (máx 24 caracteres)'],
+                                            'descripcion' => ['type' => 'STRING', 'description' => 'Especialidad u otra info (máx 72 caracteres)']
+                                        ],
+                                        'required' => ['id', 'titulo', 'descripcion']
+                                    ]
+                                ]
+                            ],
+                            'required' => ['header', 'body', 'footer', 'button_text', 'medicos']
+                        ]
                     ]
                 ]
             ]
@@ -213,9 +264,7 @@ class ChatBotController extends Controller
             Eres 'BotSalud', asistente de 'Fundasen'.
 
             REGLAS:
-            1. AL INICIO DE LA CONVERSACIÓN: Si el usuario saluda o pide algo por primera vez, TU PRIMERA ACCIÓN DEBE SER pedirle amablemente su número de identificación (cédula) para validar si está registrado. No ofrezcas servicios ni consultes turnos hasta tener su identificación.
-            2. Cuando el usuario te dé su identificación, usa INMEDIATAMENTE la herramienta 'validar_paciente'.
-            3. SI 'validar_paciente' devuelve PACIENTE_NO_ENCONTRADO: USA la herramienta 'enviar_formulario_registro' para enviarle el formulario de registro. Dile: 'No te encontré registrado. Por favor completa este formulario:'. NO le pidas sus datos por chat (nombres, etc.), usa el formulario.
+            {$reglaIdentificacion}
             4. Solo cuando esté registrado (o validado), procede con su solicitud (consultar turnos, agendar, etc.).
             5. Usa 'consultar_turnos' para ver disponibilidad. Puedes buscar por especialidad (ej: 'cardiologia') o médico.
             6. Siempre confirma fecha y hora disponible ANTES de agendar.
@@ -225,6 +274,7 @@ class ChatBotController extends Controller
             10. Para la herramienta 'agendar_cita', usa SIEMPRE el 'id_medico' real obtenido de las consultas anteriores.
             11. NUNCA muestres IDs internos (como el ID del médico o el ID de la consulta) en tus mensajes al usuario. Solo menciona Nombres, Especialidades, Fechas y Horas.
             12. Muestra siempre las horas en formato de 12 horas (AM/PM).
+            13. CUANDO NECESITES MOSTRAR UNA LISTA DE MÉDICOS AL USUARIO: SIEMPRE usa la herramienta 'enviar_lista_medicos'. Genera un header, body, footer y button_text adecuados, y pasa la lista de médicos. NO escribas los nombres de los médicos en tu respuesta de texto.
         ";
 
         Log::info("Hoy es: " . now()->format('Y-m-d l'));
@@ -235,8 +285,6 @@ class ChatBotController extends Controller
             'tools' => $tools
         ];
 
-
-
         try {
             $maxIter = 5;
             $iter = 0;
@@ -245,7 +293,6 @@ class ChatBotController extends Controller
                 $response = Http::timeout(45)->withHeaders(['Content-Type' => 'application/json'])->post($apiUrl, $payload);
                 $responseData = $response->json();
 
-                // 1. Check if Gemini wants to call a tool
                 $functionCall = null;
                 $textResponse = null;
                 $modelPart = null;
@@ -257,7 +304,6 @@ class ChatBotController extends Controller
                             $modelPart = $part;
                             break;
                         } elseif (isset($part['text'])) {
-                            // Guardar el texto por si no hay functionCall
                             $textResponse = $part['text'];
                         }
                     }
@@ -268,29 +314,26 @@ class ChatBotController extends Controller
                     $args = $functionCall['args'];
 
                     Log::info("Gemini llama a tool ($iter): $functionName", $args);
+                    // Pasamos el $telefonoUsuario a executeTool
                     $toolResult = $this->executeTool($functionName, $args, $telefonoUsuario);
 
-                    // Append the model's functionCall to history
                     $payload['contents'][] = [
                         'role' => 'model',
                         'parts' => [$modelPart]
                     ];
-                    // Append our function response to history
                     $payload['contents'][] = [
                         'role' => 'function',
                         'parts' => [['functionResponse' => ['name' => $functionName, 'response' => ['result' => $toolResult]]]]
                     ];
 
                     $iter++;
-                    continue; // Make another request to Gemini with the new history
+                    continue;
                 }
 
-                // 2. Check if Gemini returned text
                 if ($textResponse) {
                     return $textResponse;
                 }
 
-                // 3. If neither, log error and break
                 Log::error("Gemini no devolvió la estructura esperada en iteración $iter. Respuesta cruda: ", $responseData ?? []);
                 break;
             }
@@ -299,13 +342,9 @@ class ChatBotController extends Controller
                 Log::warning("Gemini alcanzó el límite máximo de iteraciones ($maxIter) llamando herramientas en cadena.");
                 return "He realizado varias búsquedas pero no logro encontrar disponibilidad exacta. Por favor, intenta especificar otra fecha o médico, o verifica el nombre de la especialidad.";
             }
-
         } catch (\Exception $e) {
             Log::error("Error en Gemini responderSaludo: " . $e->getMessage());
             Log::error("Stack trace: " . $e->getTraceAsString());
-            if (isset($responseData)) {
-                Log::error("ResponseData crudo de Gemini: ", $responseData);
-            }
         }
 
         return "Lo siento, tuve un problema técnico. Intenta más tarde.";
@@ -318,14 +357,11 @@ class ChatBotController extends Controller
                 case 'consultar_medicos':
                     return $this->toolConsultarMedicos($args['query'] ?? '');
                 case 'consultar_turnos':
-                    // Mapeo el parametro antiguo o nuevo
                     return $this->toolConsultarTurnos(
                         $args['fecha'] ?? date('Y-m-d'),
                         $args['id_medico'] ?? null,
                         $args['especialidad'] ?? null
                     );
-                case 'consultar_disponibilidad': // Backwards compatibility if needed
-                    return $this->toolConsultarTurnos($args['fecha'] ?? '', $args['id_medico'] ?? null);
                 case 'agendar_cita':
                     return $this->toolAgendarCita($args['id_medico'] ?? 0, $args['fecha'] ?? '', $args['hora'] ?? '', $args['identificacion_paciente'] ?? '');
                 case 'consultar_mis_citas':
@@ -333,70 +369,57 @@ class ChatBotController extends Controller
                 case 'cancelar_cita':
                     return $this->toolCancelarCita($args['id_consulta'] ?? 0);
                 case 'registrar_paciente':
-                    return $this->toolRegistrarPaciente($args['identificacion'] ?? '', $args['nombres'] ?? '', $args['apellidos'] ?? '');
+                    // Enviamos el telefono para registrarlo
+                    return $this->toolRegistrarPaciente($args['identificacion'] ?? '', $args['nombres'] ?? '', $args['apellidos'] ?? '', $telefonoUsuario);
                 case 'validar_paciente':
-                    return $this->toolValidarPaciente($args['identificacion'] ?? '');
+                    // Enviamos el telefono para validarlo
+                    return $this->toolValidarPaciente($args['identificacion'] ?? '', $telefonoUsuario);
                 case 'enviar_formulario_registro':
                     return $this->toolEnviarFormularioRegistro($telefonoUsuario, $args['identificacion'] ?? '');
+                case 'enviar_lista_medicos':
+                    return $this->toolEnviarListaMedicos($telefonoUsuario, $args);
                 default:
                     Log::warning("executeTool: Función no encontrada: $name");
                     return "Función no encontrada.";
             }
         } catch (\Exception $e) {
             Log::error("Excepción en executeTool ($name): " . $e->getMessage());
-            Log::error("Stack trace executeTool: " . $e->getTraceAsString());
-            Log::error("Args pasados: ", (array)$args);
             return "Hubo un error al ejecutar la función $name.";
         }
     }
 
     private function toolConsultarMedicos($query)
     {
-        Log::info("ToolConsultarMedicos: Query recibido desde Gemini = '$query'");
-
         // Limpiar el query de caracteres especiales
         $cleanQuery = trim(preg_replace('/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/u', '', $query));
-
-        // Eliminar títulos comunes que Gemini podría incluir (Dr, Dra, Doctor, Doctora, etc)
         $cleanQuery = preg_replace('/\b(dr|dra|doctor|doctora|medico|médico)\b/i', '', $cleanQuery);
-        $cleanQuery = trim(preg_replace('/\s+/', ' ', $cleanQuery)); // Limpiar espacios extra
-
-        Log::info("ToolConsultarMedicos: Clean query = '$cleanQuery'");
+        $cleanQuery = trim(preg_replace('/\s+/', ' ', $cleanQuery));
 
         $medicos = \App\Models\Medicos::with('especialidad')
             ->where('estado', \App\Models\Medicos::ACTIVO)
             ->where(function ($q) use ($cleanQuery) {
-                // 1. Coincidencia exacta o parcial directa en nombres o apellidos completos
                 $q->where('nombres', 'ilike', "%$cleanQuery%")
                     ->orWhere('apellidos', 'ilike', "%$cleanQuery%")
                     ->orWhereRaw("CONCAT(nombres, ' ', apellidos) ilike ?", ["%$cleanQuery%"]);
 
-                // 2. Coincidencia por términos individuales (si tiene más de una palabra)
                 $terms = explode(' ', $cleanQuery);
                 if (count($terms) > 1) {
-                    // Requerir que TODOS los términos significativos estén en el nombre o apellido
                     $q->orWhere(function ($subQ) use ($terms) {
                         foreach ($terms as $term) {
-                            if (strlen($term) > 2) { // Ignorar conectores como 'de', 'la'
+                            if (strlen($term) > 2) {
                                 $subQ->where(function ($termQ) use ($term) {
-                                    $termQ->where('nombres', 'ilike', "%$term%")
-                                          ->orWhere('apellidos', 'ilike', "%$term%");
+                                    $termQ->where('nombres', 'ilike', "%$term%")->orWhere('apellidos', 'ilike', "%$term%");
                                 });
                             }
                         }
                     });
                 } else {
-                    // Si es una sola palabra, buscar coincidencias parciales si es larga
                     foreach ($terms as $term) {
                         if (strlen($term) > 3) {
-                            Log::info("ToolConsultarMedicos: Buscando por término = '$term'");
-                            $q->orWhere('nombres', 'ilike', "%$term%")
-                                ->orWhere('apellidos', 'ilike', "%$term%");
+                            $q->orWhere('nombres', 'ilike', "%$term%")->orWhere('apellidos', 'ilike', "%$term%");
                         }
                     }
                 }
-
-                // 3. Coincidencia especialidad
                 $q->orWhereHas('especialidad', function ($espQ) use ($cleanQuery) {
                     $espQ->where('nombre_especialidad', 'ilike', "%$cleanQuery%");
                 });
@@ -404,16 +427,11 @@ class ChatBotController extends Controller
             ->take(5)
             ->get();
 
-        Log::info("ToolConsultarMedicos: Query SQL ejecutado = " . \App\Models\Medicos::with('especialidad')->where('estado', \App\Models\Medicos::ACTIVO)->where(function ($q) use ($cleanQuery) { $q->where('nombres', 'ilike', "%$cleanQuery%")->orWhere('apellidos', 'ilike', "%$cleanQuery%")->orWhereRaw("CONCAT(nombres, ' ', apellidos) ilike ?", ["%$cleanQuery%"]); $terms = explode(' ', $cleanQuery); if (count($terms) > 1) { $q->orWhere(function ($subQ) use ($terms) { foreach ($terms as $term) { if (strlen($term) > 2) { $subQ->where(function ($termQ) use ($term) { $termQ->where('nombres', 'ilike', "%$term%")->orWhere('apellidos', 'ilike', "%$term%"); }); } } }); } else { foreach ($terms as $term) { if (strlen($term) > 3) { $q->orWhere('nombres', 'ilike', "%$term%")->orWhere('apellidos', 'ilike', "%$term%"); } } } $q->orWhereHas('especialidad', function ($espQ) use ($cleanQuery) { $espQ->where('nombre_especialidad', 'ilike', "%$cleanQuery%"); }); })->take(5)->toSql());
-        Log::info("ToolConsultarMedicos: Se encontraron " . $medicos->count() . " coincidencias.");
-
         if ($medicos->isEmpty()) {
-            Log::info("ToolConsultarMedicos: No se encontraron médicos con query: '$cleanQuery'");
             return "No encontré médicos con ese criterio.";
         }
 
         return $medicos->map(function ($m) {
-            Log::info(" - Encontrado: ID={$m->id_medico} {$m->nombres} {$m->apellidos}");
             return [
                 'id_medico' => $m->id_medico,
                 'nombre' => $m->nombres . ' ' . $m->apellidos,
@@ -424,10 +442,8 @@ class ChatBotController extends Controller
 
     private function toolConsultarTurnos($fecha, $idMedico = null, $especialidad = null)
     {
-        Log::info("ToolConsultarTurnos: Buscando desde Fecha=$fecha, Medico=$idMedico, Esp=$especialidad");
-
         $fechaInicial = \Carbon\Carbon::parse($fecha);
-        $maxDiasBusqueda = 30; // Buscar hasta 30 días en el futuro
+        $maxDiasBusqueda = 30;
         $resultadosTotales = [];
         $fechaEncontrada = null;
 
@@ -436,8 +452,6 @@ class ChatBotController extends Controller
             $fechaStr = $fechaActual->format('Y-m-d');
             $dayOfWeek = $fechaActual->dayOfWeek;
             $idDia = ($dayOfWeek == 0) ? 7 : $dayOfWeek;
-
-            Log::info("  Buscando en Día $i: Fecha $fechaStr (dow=$dayOfWeek, id_dia=$idDia)");
 
             $query = \App\Models\Turnos::with(['medico', 'especialidad'])
                 ->where('id_dia', $idDia)
@@ -456,7 +470,7 @@ class ChatBotController extends Controller
             $turnos = $query->get();
 
             if ($turnos->isEmpty()) {
-                continue; // Saltar al siguiente día si no hay turnos base
+                continue;
             }
 
             $resultadosDia = [];
@@ -508,13 +522,13 @@ class ChatBotController extends Controller
                         $citaInicio = \Carbon\Carbon::parse($fechaCitaStr . ' ' . \Carbon\Carbon::parse($cita->hora_ini ?? $cita->hora)->format('H:i:s'));
 
                         if (!empty($cita->hora_fin)) {
-                             $citaFin = \Carbon\Carbon::parse($fechaCitaStr . ' ' . \Carbon\Carbon::parse($cita->hora_fin)->format('H:i:s'));
+                            $citaFin = \Carbon\Carbon::parse($fechaCitaStr . ' ' . \Carbon\Carbon::parse($cita->hora_fin)->format('H:i:s'));
                         } else {
-                             $citaFin = $citaInicio->copy()->addMinutes(30);
+                            $citaFin = $citaInicio->copy()->addMinutes(30);
                         }
 
                         if ($citaFin->lte($citaInicio)) {
-                             $citaFin = $citaInicio->copy()->addMinutes(30);
+                            $citaFin = $citaInicio->copy()->addMinutes(30);
                         }
 
                         if ($slotInicio->lt($citaFin) && $slotFin->gt($citaInicio)) {
@@ -541,16 +555,14 @@ class ChatBotController extends Controller
             if (!empty($resultadosDia)) {
                 $resultadosTotales = $resultadosDia;
                 $fechaEncontrada = $fechaStr;
-                break; // Romper el bucle al encontrar el primer día con disponibilidad
+                break;
             }
         }
 
         if (empty($resultadosTotales)) {
-            Log::info("ToolConsultarTurnos: No se encontró disponibilidad en los próximos $maxDiasBusqueda días.");
             return "No se encontraron turnos disponibles en los próximos $maxDiasBusqueda días para ese criterio.";
         }
 
-        Log::info("ToolConsultarTurnos: Disponibilidad encontrada para la fecha $fechaEncontrada.");
         return json_encode([
             'fecha_disponible' => $fechaEncontrada,
             'disponibilidad' => $resultadosTotales
@@ -559,24 +571,17 @@ class ChatBotController extends Controller
 
     private function toolAgendarCita($idMedico, $fecha, $hora, $identificacion)
     {
-        Log::info("ToolAgendarCita: Iniciando agendamiento. Medico=$idMedico, Fecha=$fecha, Hora=$hora, ID=$identificacion");
-
-        // 1. Validar que el paciente exista
         $paciente = \App\Models\Pacientes::where('identificacion', $identificacion)
             ->where('estado', \App\Models\Pacientes::ACTIVO)
             ->first();
 
         if (!$paciente) {
-            Log::info("ToolAgendarCita: Paciente no encontrado con ID $identificacion. Solicitando registro.");
             return "PACIENTE_NO_ENCONTRADO: El paciente con identificación $identificacion no está registrado en el sistema. Por favor, pide al usuario sus Nombres y Apellidos completos para registrarlo usando la herramienta 'registrar_paciente'.";
         }
 
         $diaSemana = \Carbon\Carbon::parse($fecha)->dayOfWeek;
         $idDia = ($diaSemana == 0) ? 7 : $diaSemana;
 
-        Log::info("ToolAgendarCita: Verificando turno activo para el día $idDia a las $hora");
-
-        // Buscar turnos del médico ese día (sin filtrar hora por SQL para manejar cruces de medianoche)
         $turnos = \App\Models\Turnos::where('id_medico', $idMedico)
             ->where('id_dia', $idDia)
             ->where('estado', 'A')
@@ -593,37 +598,28 @@ class ChatBotController extends Controller
                 $end->addDay();
             }
 
-            // 1. Check normal (Same day match)
             if ($reqTime->gte($start) && $reqTime->lt($end)) {
                 $turno = $t;
                 break;
             }
 
-            // 2. Check "Late Night" (User asks for 00:00 meaning tonight/tomorrow morning)
-            // If requested time < start, maybe it belongs to the next day part of the shift?
             if ($reqTime->lt($start)) {
                 $reqTimeNextDay = $reqTime->copy()->addDay();
                 if ($reqTimeNextDay->gte($start) && $reqTimeNextDay->lt($end)) {
                     $turno = $t;
-                    // Update the date to the next day for the appointment
                     $fecha = $reqTimeNextDay->format('Y-m-d');
-                    Log::info("ToolAgendarCita: Ajustando fecha cita a $fecha (madrugada turno anterior)");
                     break;
                 }
             }
         }
 
         if (!$turno) {
-            Log::info("ToolAgendarCita: Fallo - El médico $idMedico no tiene turno activo a las $hora el día $idDia.");
             return "No se puede agendar: El médico no tiene turno activo a esa hora el día $idDia.";
         }
-
-        Log::info("ToolAgendarCita: Turno base encontrado. Verificando solapamiento de citas.");
 
         $horaInicioRequest = \Carbon\Carbon::parse($hora);
         $horaFinRequest = $horaInicioRequest->copy()->addMinutes(30);
 
-        // Validar solapamiento con otras citas
         $existe = \App\Models\Consulta::where('id_medico', $idMedico)
             ->where('fecha', $fecha)
             ->whereIn('estado', [\App\Models\Consulta::AGENDADA, \App\Models\Consulta::PENDIENTE])
@@ -633,7 +629,6 @@ class ChatBotController extends Controller
                 $citaInicio = \Carbon\Carbon::parse($fechaCitaStr . ' ' . \Carbon\Carbon::parse($cita->hora_ini ?? $cita->hora)->format('H:i:s'));
                 $citaFin = !empty($cita->hora_fin) ? \Carbon\Carbon::parse($fechaCitaStr . ' ' . \Carbon\Carbon::parse($cita->hora_fin)->format('H:i:s')) : $citaInicio->copy()->addMinutes(30);
 
-                // Overlap: A_Start < B_End && A_End > B_Start
                 return $horaInicioRequest->lt($citaFin) && $horaFinRequest->gt($citaInicio);
             })
             ->isNotEmpty();
@@ -658,7 +653,7 @@ class ChatBotController extends Controller
                 'hora_ini' => $horaFormatted,
                 'hora_fin' => $horaFinFormatted,
                 'estado' => \App\Models\Consulta::AGENDADA,
-                'id_paciente' => $identificacion, // Model fillable uses lowercase id_paciente
+                'id_paciente' => $identificacion,
                 'fecha_add' => now(),
                 'id_usuario_add' => 'BOT_WHATSAPP'
             ]);
@@ -674,49 +669,61 @@ class ChatBotController extends Controller
         }
     }
 
-    private function toolRegistrarPaciente($identificacion, $nombres, $apellidos)
+    private function toolRegistrarPaciente($identificacion, $nombres, $apellidos, $telefonoUsuario)
     {
-        Log::info("ToolRegistrarPaciente: Iniciando registro para ID=$identificacion, Nombres=$nombres, Apellidos=$apellidos");
+        Log::info("ToolRegistrarPaciente: Iniciando registro para ID=$identificacion");
 
         try {
-            // Verificar si ya existe (podría haber sido creado en otra interacción o por otro usuario)
             $pacienteExistente = \App\Models\Pacientes::where('identificacion', $identificacion)->first();
 
             if ($pacienteExistente) {
-                if ($pacienteExistente->estado == \App\Models\Pacientes::ACTIVO) {
-                    return "El paciente con identificación $identificacion ya se encuentra registrado y activo.";
-                } else {
-                    // Si estaba inactivo, lo reactivamos
-                    $pacienteExistente->estado = \App\Models\Pacientes::ACTIVO;
-                    $pacienteExistente->nombres = strtoupper($nombres);
-                    $pacienteExistente->apellidos = strtoupper($apellidos);
-                    $pacienteExistente->save();
-                    return "El paciente con identificación $identificacion existía pero estaba inactivo. Ha sido reactivado y actualizado exitosamente.";
+                $pacienteExistente->estado = \App\Models\Pacientes::ACTIVO;
+                $pacienteExistente->nombres = strtoupper($nombres);
+                $pacienteExistente->apellidos = strtoupper($apellidos);
+
+                // Actualizar o vincular su teléfono
+                try {
+                    if (empty($pacienteExistente->telefono)) {
+                        $pacienteExistente->telefono = $telefonoUsuario;
+                    } elseif (empty($pacienteExistente->telefono)) {
+                        $pacienteExistente->telefono = $telefonoUsuario;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("Columna telefono no hallada en Pacientes.");
                 }
+
+                $pacienteExistente->save();
+                return "El paciente con identificación $identificacion ya se encuentra registrado y activo.";
             }
 
-            // Crear nuevo paciente
-            $nuevoPaciente = \App\Models\Pacientes::create([
+            $nuevoPaciente = new \App\Models\Pacientes([
                 'identificacion' => $identificacion,
                 'nombres' => strtoupper($nombres),
                 'apellidos' => strtoupper($apellidos),
-                'rut' => '', // Valor por defecto si es requerido o dejar vacío
+                'rut' => '',
                 'estado' => \App\Models\Pacientes::ACTIVO,
-                'tipo_documento' => '1', // 1 = Cédula (asumiendo valor por defecto)
+                'tipo_documento' => '1',
             ]);
 
-            Log::info("ToolRegistrarPaciente: Paciente registrado exitosamente. ID interno: " . $nuevoPaciente->id_paciente);
-            return "Paciente registrado exitosamente en el sistema. Ya puedes proceder a agendar su cita.";
+            // Vincular su teléfono
+            try {
+                $nuevoPaciente->telefono = $telefonoUsuario;
+            } catch (\Exception $e) {
+                Log::warning("Columna telefono no hallada en Pacientes.");
+            }
 
+            $nuevoPaciente->save();
+
+            return "Paciente registrado exitosamente en el sistema. Ya puedes proceder a agendar su cita.";
         } catch (\Exception $e) {
             Log::error("Error registrando paciente: " . $e->getMessage());
             return "Hubo un error al intentar registrar al paciente en la base de datos: " . $e->getMessage();
         }
     }
 
-    private function toolValidarPaciente($identificacion)
+    private function toolValidarPaciente($identificacion, $telefonoUsuario)
     {
-        Log::info("ToolValidarPaciente: Verificando paciente con ID=$identificacion");
+        Log::info("ToolValidarPaciente: Verificando ID=$identificacion para el teléfono $telefonoUsuario");
 
         try {
             $paciente = \App\Models\Pacientes::where('identificacion', $identificacion)
@@ -724,6 +731,26 @@ class ChatBotController extends Controller
                 ->first();
 
             if ($paciente) {
+
+                // Si encontramos al paciente pero no tiene registrado su número, lo enlazamos automáticamente
+                try {
+                    $actualizado = false;
+                    if (empty($paciente->telefono)) {
+                        $paciente->telefono = $telefonoUsuario;
+                        $actualizado = true;
+                    } elseif (empty($paciente->telefono)) {
+                        $paciente->telefono = $telefonoUsuario;
+                        $actualizado = true;
+                    }
+
+                    if ($actualizado) {
+                        $paciente->save();
+                        Log::info("Teléfono $telefonoUsuario vinculado exitosamente al paciente $identificacion");
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("No se pudo vincular el teléfono al paciente (posible falta de columna telefono/telefono). " . $e->getMessage());
+                }
+
                 return "PACIENTE_ENCONTRADO: El paciente {$paciente->nombres} {$paciente->apellidos} está registrado. Puedes proceder con su consulta (ej. consultar turnos o agendar).";
             } else {
                 return "PACIENTE_NO_ENCONTRADO: El paciente no existe o está inactivo. Por favor, solicítale sus Nombres y Apellidos completos para registrarlo usando la herramienta 'registrar_paciente'.";
@@ -741,39 +768,36 @@ class ChatBotController extends Controller
         $version = config('app.WHATSAPP_VERSION', env('WHATSAPP_VERSION', 'v18.0'));
         $phoneNumberId = config('app.WHATSAPP_PHONE_NUMBER_ID', env('WHATSAPP_PHONE_NUMBER_ID'));
         $token = config('app.WHATSAPP_TOKEN', env('WHATSAPP_TOKEN'));
-        $flowId = '1604082303973271';
 
         $url = "https://graph.facebook.com/{$version}/{$phoneNumberId}/messages";
 
         $payload = [
-    'messaging_product' => 'whatsapp',
-    'recipient_type' => 'individual',
-    'to' => $telefonoUsuario,
-    'type' => 'template',
-    'template' => [
-        'name' => 'flujo_registro_de_datos', // El nombre que nos dio el JSON
-        'language' => [
-            'code' => 'es_CO' // El idioma que nos dio el JSON
-        ],
-        'components' => [
-            [
-                'type' => 'button',
-                'sub_type' => 'flow',
-                'index' => '0',
-                'parameters' => [
+            'messaging_product' => 'whatsapp',
+            'recipient_type' => 'individual',
+            'to' => $telefonoUsuario,
+            'type' => 'template',
+            'template' => [
+                'name' => 'flujo_registro_de_datos',
+                'language' => [
+                    'code' => 'es_CO'
+                ],
+                'components' => [
                     [
-                        'type' => 'action',
-                        'action' => [
-                            'flow_token' => "REGISTRO_$identificacion"
-                            // Nota: En las plantillas NO hace falta enviar el screen o el flow_id,
-                            // porque la plantilla ya tiene configurado "navigate_screen": "SIGN_UP" internamente.
+                        'type' => 'button',
+                        'sub_type' => 'flow',
+                        'index' => '0',
+                        'parameters' => [
+                            [
+                                'type' => 'action',
+                                'action' => [
+                                    'flow_token' => "REGISTRO_$identificacion"
+                                ]
+                            ]
                         ]
                     ]
                 ]
             ]
-        ]
-    ]
-];
+        ];
 
         try {
             $response = Http::withToken($token)->post($url, $payload);
@@ -788,6 +812,96 @@ class ChatBotController extends Controller
         } catch (\Exception $e) {
             Log::error("Excepción enviando flow: " . $e->getMessage());
             return "Error técnico al enviar el formulario.";
+        }
+    }
+
+    private function toolEnviarListaMedicos($telefonoUsuario, $args)
+    {
+        $version = config('app.WHATSAPP_VERSION', env('WHATSAPP_VERSION', 'v18.0'));
+        $phoneNumberId = config('app.WHATSAPP_PHONE_NUMBER_ID', env('WHATSAPP_PHONE_NUMBER_ID'));
+        $token = config('app.WHATSAPP_TOKEN', env('WHATSAPP_TOKEN'));
+
+        $url = "https://graph.facebook.com/{$version}/{$phoneNumberId}/messages";
+
+        $header = mb_substr($args['header'] ?? 'Médicos Disponibles', 0, 60);
+        $bodyText = mb_substr($args['body'] ?? 'Selecciona un médico de la siguiente lista:', 0, 1024);
+        $footer = mb_substr($args['footer'] ?? 'Fundasen', 0, 60);
+        $buttonText = mb_substr($args['button_text'] ?? 'Ver Médicos', 0, 20);
+
+        $rows = [];
+        foreach ($args['medicos'] ?? [] as $index => $medico) {
+            if ($index >= 10) break;
+
+            $idMedico = $medico['id'] ?? (string)$index;
+            $titulo = mb_substr($medico['titulo'] ?? 'Médico', 0, 24);
+            $descripcion = mb_substr($medico['descripcion'] ?? '', 0, 72);
+
+            $rows[] = [
+                'id' => mb_substr('MEDICO_' . $idMedico, 0, 200),
+                'title' => $titulo,
+                'description' => $descripcion
+            ];
+        }
+
+        if (empty($rows)) {
+            return "Error: No hay médicos para enviar en la lista.";
+        }
+
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'recipient_type' => 'individual',
+            'to' => $telefonoUsuario,
+            'type' => 'interactive',
+            'interactive' => [
+                'type' => 'list',
+                'header' => [
+                    'type' => 'text',
+                    'text' => $header
+                ],
+                'body' => [
+                    'text' => $bodyText
+                ],
+                'footer' => [
+                    'text' => $footer
+                ],
+                'action' => [
+                    'button' => $buttonText,
+                    'sections' => [
+                        [
+                            'title' => 'Médicos Disponibles',
+                            'rows' => $rows
+                        ]
+                    ]
+                ]
+            ]
+        ];
+
+        try {
+            $response = Http::withToken($token)->post($url, $payload);
+            $responseData = $response->json();
+
+            if ($response->successful()) {
+                if (isset($responseData['messages'][0]['id'])) {
+                    Mensajes::create([
+                        'wamid' => $responseData['messages'][0]['id'],
+                        'de' => $phoneNumberId,
+                        'para' => $telefonoUsuario,
+                        'mensaje' => $bodyText,
+                        'tipo' => 'interactive',
+                        'estado' => 'sent',
+                        'fecha_envio' => now(),
+                        'id_agente' => 1
+                    ]);
+                }
+
+                return "LISTA_ENVIADA: Se ha enviado la lista interactiva de médicos al usuario. Pídele al usuario que seleccione un médico de la lista que acabas de enviar.";
+            } else {
+                Log::error("Error enviando lista de médicos: " . $response->body());
+                return "Error al enviar la lista de médicos (API WhatsApp): " . $response->body();
+            }
+        } catch (\Exception $e) {
+            Log::error("Excepción enviando lista de médicos: " . $e->getMessage());
+            return "Error técnico al enviar la lista.";
         }
     }
 
@@ -810,7 +924,7 @@ class ChatBotController extends Controller
             $nombreEspecialidad = $cita->especialidad ? $cita->especialidad->nombre_especialidad : 'General';
 
             $resultado[] = [
-                'id_consulta_interno' => $cita->id_consulta, // Para uso interno del LLM si necesita cancelar
+                'id_consulta_interno' => $cita->id_consulta,
                 'fecha' => $cita->fecha,
                 'hora' => \Carbon\Carbon::parse($cita->hora)->format('h:i A'),
                 'medico' => $nombreMedico,

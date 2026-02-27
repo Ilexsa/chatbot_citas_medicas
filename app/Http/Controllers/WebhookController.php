@@ -13,14 +13,13 @@ class WebhookController extends Controller
 {
     public function handleWebhook(Request $request)
     {
-        // $token = config('app.whatsapp_token_webhook', env('WHATSAPP_TOKEN_WEBHOOK'));
         try {
             $token = config('app.whatsapp_token_webhook', env('WHATSAPP_TOKEN_WEBHOOK'));
             $query = $request->query();
 
-            $mode = $query['hub_mode'];
-            $palabraReto = $query['hub_challenge'];
-            $tokenVerificacion = $query['hub_verify_token'];
+            $mode = $query['hub_mode'] ?? null;
+            $palabraReto = $query['hub_challenge'] ?? null;
+            $tokenVerificacion = $query['hub_verify_token'] ?? null;
 
             if ($mode && $tokenVerificacion) {
                 if ($mode === 'subscribe' && $token == $tokenVerificacion) {
@@ -35,76 +34,49 @@ class WebhookController extends Controller
                 'mensaje' => $e->getMessage(),
             ], 500);
         }
-        // Log::info('Llego el webhook', $request->all());
     }
 
     public function acctionWebhook(Request $request)
     {
         try {
-            // Log::info('Llego el webhook', $request->all());
             $bodyContent = json_decode($request->getContent(), true);
-            $datos = $bodyContent['entry'][0]['changes'][0]['value'];
-            if (isset($datos['messages'][0])) { // Usa isset para más seguridad
+            $datos = $bodyContent['entry'][0]['changes'][0]['value'] ?? [];
+
+            if (isset($datos['messages'][0])) {
                 $messageData = $datos['messages'][0];
-                $metadata = $datos['metadata']; // Asumiendo que metadata está al mismo nivel que messages
+                $metadata = $datos['metadata'];
 
                 $tipo = $messageData['type'] ?? 'text';
-                $para = $messageData['from'] ?? 'unknown_sender';
-                $idMensaje = $messageData['id'] ?? 'unknown_id_' . time(); // Asegura un ID único si falta
-                $de = $metadata['phone_number_id'] ?? 'unknown_recipient'; // ID de tu número
+                $para = $messageData['from'] ?? 'unknown_sender'; // Teléfono del usuario
+                $idMensaje = $messageData['id'] ?? 'unknown_id_' . time();
+                $de = $metadata['phone_number_id'] ?? 'unknown_recipient'; // ID de tu número Meta
 
-                // Estado inicial (puede ser actualizado por 'statuses' luego)
-                $estado = 'received'; // O 'delivered' si lo prefieres
+                $estado = 'received';
+                $id_referencia = $messageData['context']['id'] ?? null;
 
-                // Obtener id de referencia si existe
-                if (isset($messageData['context']['id'])) {
-                    $id_referencia = $messageData['context']['id'];
-                }
-
-                // Variables para guardar en Mensaje
                 $mensaje = '';
                 $header = 'N/A';
                 $tipo_header = 'N/A';
-                $isFlowResponse = false; // Flag para saber si es una respuesta de Flow
+                $isFlowResponse = false;
 
                 // Procesar según el tipo
                 if ($tipo == 'text') {
                     $mensaje = $messageData['text']['body'] ?? '';
                 } elseif ($tipo == 'image') {
-                    $tipo = 'imagen'; // Cambiando tipo para tu BD
+                    $tipo = 'imagen';
                     $idImagen = $messageData['image']['id'] ?? null;
                     $mensaje = $messageData['image']['caption'] ?? 'N/A';
                     if ($idImagen) {
-                        $header = $idImagen; // Guarda el ID como header
+                        $header = $idImagen;
                         $tipo_header = 'IMAGE';
-                        try {
-                            // $response1 = $this->whatsapp_cloud_api->downloadMedia($idImagen);
-                            // Asegúrate que el directorio existe y tiene permisos
-                            // $imgPath = public_path('img/chat/');
-                            // if (!is_dir($imgPath)) mkdir($imgPath, 0775, true);
-                            // file_put_contents($imgPath . $idImagen . '.jpg', $response1->body());
-                        } catch (Exception $e) {
-                            Log::error("Error descargando imagen $idImagen: " . $e->getMessage());
-                        }
                     }
                 } elseif ($tipo == 'video') {
-                    $tipo = 'video'; // Consistent type
+                    $tipo = 'video';
                     $mensaje = $messageData['video']['caption'] ?? 'N/A';
                     $idVideo = $messageData['video']['id'] ?? null;
                     if ($idVideo) {
-                        $header = $idVideo; // Guarda el ID como header
+                        $header = $idVideo;
                         $tipo_header = 'VIDEO';
-                        try {
-                            // $response1 = $this->whatsapp_cloud_api->downloadMedia($idVideo);
-                            // $videoPath = public_path('videos/k2/');
-                            // if (!is_dir($videoPath)) mkdir($videoPath, 0775, true);
-                            // $nombreVideo = 'video_' . $idVideo . '.mp4'; // Usa ID para nombre único
-                            // file_put_contents($videoPath . $nombreVideo, $response1->body());
-                            // Podrías guardar $nombreVideo en header si prefieres la ruta
-                            // $header = 'videos/k2/' . $nombreVideo;
-                        } catch (Exception $e) {
-                            Log::error("Error descargando video $idVideo: " . $e->getMessage());
-                        }
                     } else {
                         $header = 'N/A';
                         $tipo_header = 'N/A';
@@ -112,23 +84,34 @@ class WebhookController extends Controller
                 } elseif ($tipo == 'document') {
                     $tipo = 'documento';
                     $mensaje = $messageData['document']['caption'] ?? 'N/A';
-                    $header = $messageData['document']['id'] ?? 'N/A'; // Podrías querer descargar el documento aquí también
+                    $header = $messageData['document']['id'] ?? 'N/A';
                     $tipo_header = 'DOCUMENT';
                 } elseif ($tipo == 'audio') {
                     $tipo = 'audio';
-                    $mensaje = $messageData['audio']['id'] ?? 'N/A'; // Guarda el ID del audio
-                    $header = 'N/A'; // Podrías querer descargar el audio aquí también
+                    $mensaje = $messageData['audio']['id'] ?? 'N/A';
+                    $header = 'N/A';
                     $tipo_header = 'N/A';
                 } elseif ($tipo == 'interactive') {
                     $interactiveData = $messageData['interactive'];
+
                     if (isset($interactiveData['button_reply'])) {
                         $mensaje = $interactiveData['button_reply']['title'] ?? 'error';
-                        $valorChat = $interactiveData['button_reply']['id'] ?? 'error';
                         $header = 'N/A';
                         $tipo_header = 'N/A';
                     } elseif (isset($interactiveData['list_reply'])) {
-                        $mensaje = $interactiveData['list_reply']['description'] ?? ($interactiveData['list_reply']['title'] ?? 'error');
-                        $valorChat = $interactiveData['list_reply']['id'] ?? 'error';
+                        // AQUÍ CAPTURAMOS LA RESPUESTA DE LA LISTA DE MÉDICOS
+                        $title = $interactiveData['list_reply']['title'] ?? 'error';
+                        $idOpcion = $interactiveData['list_reply']['id'] ?? 'error';
+
+                        // Validamos si la opción seleccionada corresponde a un Médico (Prefijo: MEDICO_)
+                        if (strpos($idOpcion, 'MEDICO_') === 0) {
+                            $idMedico = str_replace('MEDICO_', '', $idOpcion);
+                            // Le inyectamos una nota oculta al LLM para que sepa exactamente qué ID tiene el médico seleccionado
+                            $mensaje = "He seleccionado al médico: $title. [Nota interna para BotSalud: el id_medico seleccionado es $idMedico. Proceder con el flujo para consultar turnos o agendar.]";
+                        } else {
+                            $mensaje = "He seleccionado la opción: " . $title;
+                        }
+
                         $header = 'N/A';
                         $tipo_header = 'N/A';
                     } elseif (isset($interactiveData['nfm_reply'])) {
@@ -140,16 +123,13 @@ class WebhookController extends Controller
                         $tipo_header = 'FLOW';
                         $isFlowResponse = true;
 
-                        // Log para depuración de keys
                         Log::info("Webhook nfm_reply recibido:", $responseJson);
 
-                        // Intentar registrar al paciente con los datos del Flow
-                        // Mapeo de campos según la plantilla del usuario: nombre, apellidos, Correo, Identificacion, rut
-                        $identificacion = $responseJson['Identificacion'] ?? ($responseJson['identificacion'] ?? null);
-                        $nombres = $responseJson['nombre'] ?? ($responseJson['nombres'] ?? null);
-                        $apellidos = $responseJson['apellidos'] ?? ($responseJson['apellido'] ?? null);
-                        $rut = $responseJson['rut'] ?? '';
-                        $correo = $responseJson['Correo'] ?? ($responseJson['correo'] ?? null); // Solo para log o futuro uso
+                        $identificacion = $responseJson['screen_0_Identificacion_3'] ?? ($responseJson['identificacion'] ?? null);
+                        $nombres = $responseJson['screen_0_Nombre_0'] ?? ($responseJson['nombres'] ?? null);
+                        $apellidos = $responseJson['screen_0_Apellidos_1'] ?? ($responseJson['apellido'] ?? null);
+                        $rut = $responseJson['screen_0_Rut_4'] ?? '';
+                        $correo = $responseJson['screen_0_Email_2'] ?? ($responseJson['correo'] ?? null);
 
                         if ($identificacion && $nombres && $apellidos) {
                             try {
@@ -160,6 +140,8 @@ class WebhookController extends Controller
                                         'apellidos' => strtoupper($apellidos),
                                         'rut' => $rut,
                                         'estado' => \App\Models\Pacientes::ACTIVO,
+                                        'email' => $correo,
+                                        'telefono' => $para,
                                         'tipo_documento' => '1',
                                     ]
                                 );
@@ -176,55 +158,50 @@ class WebhookController extends Controller
                         }
                     }
                 } else {
-                    // Otros tipos de mensaje (location, contacts, etc.)
                     Log::info("Tipo de mensaje no manejado recibido: {$tipo}");
                     $mensaje = '[' . ucfirst($tipo) . ' recibido]';
                 }
 
                 $agente = 1;
-
                 $mensajeParaTablaGeneral = $isFlowResponse ? "[Respuesta de Flow recibida]" : $mensaje;
 
                 Mensajes::updateOrCreate(
                     ["wamid" => $idMensaje],
                     [
                         "tipo" => $tipo,
-                        "de" => $para,    // Quién envía (usuario)
-                        "para" => $de,    // Quién recibe (tu número)
-                        "mensaje" => $mensajeParaTablaGeneral, // Usa el texto apropiado
+                        "de" => $para,
+                        "para" => $de,
+                        "mensaje" => $mensajeParaTablaGeneral,
                         "header" => $header,
                         "tipo_header" => $tipo_header,
-                        "estado" => $estado, // Estado inicial
-                        "fecha_envio" => Carbon::createFromTimestamp($messageData['timestamp'] ?? time()), // Usa el timestamp del mensaje
+                        "estado" => $estado,
+                        "fecha_envio" => Carbon::createFromTimestamp($messageData['timestamp'] ?? time()),
                         "id_agente" => $agente,
-                        'id_referencia' => $id_referencia ?? null, // Guarda el ID de referencia
+                        'id_referencia' => $id_referencia,
                     ]
                 );
 
-
-                // Lógica de ChatBot (si aplica y no es una respuesta de Flow que ya manejaste)
-                if ($estado == 'received') { // O el estado apropiado
-                    $chatbotController = new ChatbotController();
-                    $chatbotController->chatBot($para, $mensaje);
+                // REDIRECCIÓN AL CHATBOT
+                // Pasamos el mensaje (que ahora contiene el id_medico interno si era una lista de medicos)
+                if ($estado == 'received') {
+                    $chatbotController = new ChatBotController();
+                    $chatbotController->chatbot($para, $mensaje);
                 }
             }
 
             if (array_key_exists('statuses', $datos)) {
                 $tipo = 'text';
                 $para = $datos['statuses'][0]['recipient_id'] ?? '111';
-                $de = $datos['metadata']['display_phone_number'];
-                $mensaje = $datos['entry'][0]['changes'][0]['field'] ?? 'James';
+                $de = $datos['metadata']['display_phone_number'] ?? 'unknown';
+                $mensaje = $datos['entry'][0]['changes'][0]['field'] ?? 'estado_update';
                 $agente = 1;
-                $idMensaje = $datos['statuses'][0]['id'] ?? 'Que pasa';
+                $idMensaje = $datos['statuses'][0]['id'] ?? 'estado_id';
                 $estado = $datos['statuses'][0]['status'] ?? 'sent';
 
                 $validarMensajeEnviado = Mensajes::firstWhere('wamid', $idMensaje);
                 if ($validarMensajeEnviado) {
-                    $actualizarvalidarMensajeEnviado = $validarMensajeEnviado->update(["estado" => $estado]);
+                    $validarMensajeEnviado->update(["estado" => $estado]);
                 } else {
-                    if (isset($datos['entry'][0]['changes'][0]['value']['messages'][0]['text']['body'])) {
-                        $mensaje = $datos['entry'][0]['changes'][0]['value']['messages'][0]['text']['body'] ?? 'James';
-                    }
                     $validarMensajeEnviado = Mensajes::updateOrCreate([
                         'wamid' => $idMensaje
                     ], [
@@ -240,18 +217,17 @@ class WebhookController extends Controller
                 if ($estado == 'failed') {
                     DetalleError::create([
                         'wamid' => $datos['statuses'][0]['id'],
-                        'code' => $datos['statuses'][0]['errors'][0]['code'],
-                        'title' => $datos['statuses'][0]['errors'][0]['title'],
-                        'message' => $datos['statuses'][0]['errors'][0]['message'],
-                        'details' => $datos['statuses'][0]['errors'][0]['error_data']['details'],
+                        'code' => $datos['statuses'][0]['errors'][0]['code'] ?? 'N/A',
+                        'title' => $datos['statuses'][0]['errors'][0]['title'] ?? 'N/A',
+                        'message' => $datos['statuses'][0]['errors'][0]['message'] ?? 'N/A',
+                        'details' => $datos['statuses'][0]['errors'][0]['error_data']['details'] ?? 'N/A',
                     ]);
                 }
-
-                // -------------------------------------------------------------------------------------------
-
-
             }
+
+            return response()->json(['estado' => 'ok']);
         } catch (Exception $e) {
+            Log::error("Excepción en WebhookController@acctionWebhook: " . $e->getMessage());
             return response()->json([
                 'estado' => 'error',
                 'mensaje' => $e->getMessage(),

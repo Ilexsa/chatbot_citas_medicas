@@ -25,5 +25,6 @@ class Pacientes extends Model
         'rut',
         'estado',
         'tipo_documento',
+        'telefono',
     ];
 }
