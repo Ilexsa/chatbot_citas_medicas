@@ -21,6 +21,11 @@ class WebhookController extends Controller
             $palabraReto = $query['hub_challenge'] ?? null;
             $tokenVerificacion = $query['hub_verify_token'] ?? null;
 
+            Log::info('Llego el webhook', [
+                'tokenQuellega' => $tokenVerificacion,
+                'tokenProd' => $token
+            ]);
+
             if ($mode && $tokenVerificacion) {
                 if ($mode === 'subscribe' && $token == $tokenVerificacion) {
                     return response($palabraReto, 200)->header('Content-Type', 'text/plain');
