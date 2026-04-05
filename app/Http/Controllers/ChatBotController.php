@@ -288,10 +288,17 @@ class ChatBotController extends Controller
         try {
             $maxIter = 5;
             $iter = 0;
+            $totalTokensEntrada = 0;
+            $totalTokensSalida  = 0;
 
             while ($iter < $maxIter) {
                 $response = Http::timeout(45)->withHeaders(['Content-Type' => 'application/json'])->post($apiUrl, $payload);
                 $responseData = $response->json();
+
+                // Acumular tokens reales de cada llamada a Gemini
+                $usage = $responseData['usageMetadata'] ?? [];
+                $totalTokensEntrada += $usage['promptTokenCount']     ?? 0;
+                $totalTokensSalida  += $usage['candidatesTokenCount'] ?? 0;
 
                 $functionCall = null;
                 $textResponse = null;
@@ -331,6 +338,17 @@ class ChatBotController extends Controller
                 }
 
                 if ($textResponse) {
+                    try {
+                        \App\Models\RegistroUso::create([
+                            'telefono_usuario' => $telefonoUsuario,
+                            'tokens_entrada'   => $totalTokensEntrada,
+                            'tokens_salida'    => $totalTokensSalida,
+                            'iteraciones_ia'   => $iter + 1,
+                            'fecha'            => now()->format('Y-m-d'),
+                        ]);
+                    } catch (\Exception $e) {
+                        Log::warning("No se pudo guardar RegistroUso: " . $e->getMessage());
+                    }
                     return $textResponse;
                 }
 
@@ -340,6 +358,17 @@ class ChatBotController extends Controller
 
             if ($iter >= $maxIter) {
                 Log::warning("Gemini alcanzó el límite máximo de iteraciones ($maxIter) llamando herramientas en cadena.");
+                try {
+                    \App\Models\RegistroUso::create([
+                        'telefono_usuario' => $telefonoUsuario,
+                        'tokens_entrada'   => $totalTokensEntrada,
+                        'tokens_salida'    => $totalTokensSalida,
+                        'iteraciones_ia'   => $iter,
+                        'fecha'            => now()->format('Y-m-d'),
+                    ]);
+                } catch (\Exception $e) {
+                    Log::warning("No se pudo guardar RegistroUso (max iter): " . $e->getMessage());
+                }
                 return "He realizado varias búsquedas pero no logro encontrar disponibilidad exacta. Por favor, intenta especificar otra fecha o médico, o verifica el nombre de la especialidad.";
             }
         } catch (\Exception $e) {
@@ -662,6 +691,33 @@ class ChatBotController extends Controller
             $nombreMedico = $medico ? ($medico->nombres . ' ' . $medico->apellidos) : 'el médico seleccionado';
             $horaAmPm = \Carbon\Carbon::parse($hora)->format('h:i A');
 
+            // Sincronizar con Google Calendar
+            try {
+                $pacienteObj = \App\Models\Pacientes::where('identificacion', $identificacion)->first();
+                $nombrePaciente = $pacienteObj
+                    ? ($pacienteObj->nombres . ' ' . $pacienteObj->apellidos)
+                    : $identificacion;
+                $especialidadNombre = $turno->especialidad
+                    ? $turno->especialidad->nombre_especialidad
+                    : 'Consulta General';
+
+                $calendarService = new \App\Services\GoogleCalendarService();
+                $eventId = $calendarService->crearEvento(
+                    $fecha,
+                    \Carbon\Carbon::parse($hora)->format('H:i:s'),
+                    $nombreMedico,
+                    $nombrePaciente,
+                    $especialidadNombre
+                );
+
+                if ($eventId) {
+                    $cita->id_evento_calendar = $eventId;
+                    $cita->save();
+                }
+            } catch (\Exception $e) {
+                Log::error("Error sincronizando cita con Google Calendar: " . $e->getMessage());
+            }
+
             return "Cita agendada con éxito para el $fecha a las $horaAmPm con $nombreMedico.";
         } catch (\Exception $e) {
             Log::error("Error agendando cita: " . $e->getMessage());
@@ -950,6 +1006,16 @@ class ChatBotController extends Controller
         $cita->fecha_del = now();
         $cita->id_usuario_del = 'BOT_WHATSAPP';
         $cita->save();
+
+        // Eliminar el evento de Google Calendar si existe
+        if (!empty($cita->id_evento_calendar)) {
+            try {
+                $calendarService = new \App\Services\GoogleCalendarService();
+                $calendarService->eliminarEvento($cita->id_evento_calendar);
+            } catch (\Exception $e) {
+                Log::error("Error eliminando evento de Google Calendar (id_consulta=$idConsulta): " . $e->getMessage());
+            }
+        }
 
         return "Cita #$idConsulta cancelada correctamente.";
     }

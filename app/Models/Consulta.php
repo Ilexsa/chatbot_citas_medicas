@@ -101,6 +101,7 @@ class Consulta extends Model
         'fecha_devol',
         'id_usuario_open',
         'fecha_open',
+        'id_evento_calendar',
     ];
 
     public function medico()

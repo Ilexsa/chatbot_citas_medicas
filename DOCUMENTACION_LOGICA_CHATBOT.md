@@ -132,6 +132,77 @@ De acuerdo a las consultas del controlador, el esquema base requiere al menos la
 
 ---
 
+## 10. Integración con Google Calendar
+
+### 10.1. Propósito
+Cada cita agendada o cancelada desde el chatbot se sincroniza automáticamente con un Google Calendar específico de la clínica, manteniendo la agenda visible para el personal médico en tiempo real.
+
+### 10.2. Mecanismo de Autenticación (Service Account JWT)
+*   **Sin dependencias externas:** Se implementa con PHP `openssl` nativo y el `Http` facade de Laravel. No requiere el paquete `google/apiclient`.
+*   **Flujo:** Se construye un JWT firmado con RS256 usando la clave privada del archivo de credenciales de la Service Account. Este JWT se intercambia por un Access Token OAuth2 contra `https://oauth2.googleapis.com/token`.
+*   **Caché:** El Access Token se almacena en caché de Laravel por 3500 segundos (~58 min) para evitar una re-autenticación en cada mensaje entrante.
+*   **Archivo:** `app/Services/GoogleCalendarService.php`.
+
+### 10.3. Variables de Entorno Requeridas
+*   `GOOGLE_SERVICE_ACCOUNT_JSON`: Ruta absoluta al archivo JSON de credenciales de la Service Account (ej. `/var/www/credentials/service-account.json`).
+*   `GOOGLE_CALENDAR_ID`: ID del calendario destino (ej. `xxxxxxxx@group.calendar.google.com`).
+
+### 10.4. Setup en Google Cloud (pasos manuales)
+1.  Crear proyecto en Google Cloud Console → habilitar **Google Calendar API**.
+2.  Crear una **Service Account** → descargar su archivo JSON de credenciales.
+3.  En Google Calendar → compartir el calendario objetivo con el email de la Service Account (permiso: **"Hacer cambios en eventos"**).
+
+### 10.5. Ciclo de Vida del Evento
+*   **Al agendar (`toolAgendarCita`):** Después de insertar exitosamente en la tabla `consulta`, se invoca `GoogleCalendarService::crearEvento()`. El `id` del evento retornado por la API de Google se persiste en la columna `consulta.id_evento_calendar`. Si la llamada a Google falla, la cita ya quedó guardada en la BD y el fallo se registra en `Log::error` sin interrumpir la respuesta al usuario.
+*   **Al cancelar (`toolCancelarCita`):** Después del soft-delete en BD, se verifica si la cita tiene `id_evento_calendar`. De ser así, se invoca `GoogleCalendarService::eliminarEvento()`. Un estado HTTP 410 (ya no existe en Google) se trata como éxito para idempotencia.
+*   **Estructura del evento:** `summary`: "Cita: {nombre_paciente}", `description`: médico + especialidad, `start`/`end`: fecha y hora de la cita con duración de 30 minutos, zona horaria `America/Bogota` (configurable vía `APP_TIMEZONE`).
+
+### 10.6. Cambio en Base de Datos
+*   **Migración:** `2026_04_04_000001_add_calendar_event_to_consulta.php`
+*   **Columna agregada:** `consulta.id_evento_calendar` (`string`, nullable).
+
+---
+
+## 11. Tracking de Costos Operativos
+
+### 11.1. Propósito
+Registrar el consumo real de tokens de Gemini por conversación y exponer un endpoint que calcula el costo estimado en USD y COP para un período dado. Permite al operador del sistema cotizar el servicio a sus clientes.
+
+### 11.2. Captura de Tokens (usageMetadata)
+La API de Gemini retorna un objeto `usageMetadata` en cada respuesta con los campos `promptTokenCount` y `candidatesTokenCount`. Dentro del bucle de razonamiento IA (max 5 iteraciones), estos valores se **acumulan** en `$totalTokensEntrada` y `$totalTokensSalida`. Al obtener la respuesta final de texto (o al alcanzar el límite de iteraciones), se persiste un registro en la tabla `registros_uso`.
+
+### 11.3. Tabla `registros_uso`
+*   **Migración:** `2026_04_04_000002_create_registros_uso_table.php`
+*   **Modelo:** `app/Models/RegistroUso.php`
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` | bigint PK | Auto-incremental |
+| `telefono_usuario` | string(30) | Número WhatsApp del paciente |
+| `tokens_entrada` | bigint | Sum de `promptTokenCount` de todas las iteraciones de la conversación |
+| `tokens_salida` | bigint | Sum de `candidatesTokenCount` |
+| `iteraciones_ia` | tinyint | Cantidad de llamadas a Gemini realizadas |
+| `fecha` | date | Fecha de la interacción |
+
+### 11.4. Endpoint de Reporte
+*   **Ruta:** `GET /api/reporte-costos`
+*   **Controlador:** `app/Http/Controllers/ReporteCostosController.php`
+*   **Parámetros (query string):**
+    *   `desde`: Fecha inicio `YYYY-MM-DD` (default: inicio del mes en curso).
+    *   `hasta`: Fecha fin `YYYY-MM-DD` (default: hoy).
+    *   `trm`: Tasa de cambio USD→COP (default: 4200).
+*   **Secciones de la respuesta JSON:**
+    *   `gemini_2_5_flash`: tokens totales, desglose costo input/output en USD, número de conversaciones e iteraciones.
+    *   `whatsapp_cloud_api`: ventanas de servicio únicas (agrupadas por teléfono+día), templates enviados, costo estimado por tipo de conversación.
+    *   `resumen`: `total_usd`, `total_cop`, costo promedio por conversación, y `sugerencia_cotizacion` con el total multiplicado ×3 como referencia de precio de venta.
+
+### 11.5. Precios Configurables (`.env`)
+*   `GEMINI_PRICE_INPUT_PER_1M`: USD por millón de tokens de entrada (default `0.15`).
+*   `GEMINI_PRICE_OUTPUT_PER_1M`: USD por millón de tokens de salida (default `0.60`).
+*   Los precios de WhatsApp Cloud API (servicio ~$0.0095 y templates ~$0.0315 para Colombia) están definidos como constantes en el controlador y deben verificarse contra Meta Business Manager, ya que varían por país y cambian periódicamente.
+
+---
+
 ## 9. Seguridad, Rendimiento y Tolerancia a Fallos
 *   **Control de Bucles de IA:** Las IAs generativas pueden quedar atrapadas llamando herramientas cíclicamente (ej. buscar paciente que no existe, intentar agendar, fallar, volver a buscar). Se ha implementado un límite estricto de **$maxIter = 5**. Si supera este número, el ciclo se rompe y se envía un mensaje genérico al usuario (Graceful Degradation).
 *   **Timeouts de Red:** Debido a que el controlador espera a que Gemini evalúe e invoque herramientas (a veces secuencialmente), se utiliza `Http::timeout(45)` en la llamada a la API de Google, evitando errores de Gateway (`504 Gateway Timeout`) de Laravel/Nginx.
