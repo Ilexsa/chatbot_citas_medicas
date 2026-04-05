@@ -106,7 +106,7 @@ class ReporteCostosController extends Controller
         // ===================================================
         // WHATSAPP — ventanas de conversación + templates
         // ===================================================
-        $ventanasServicio = Mensajes::selectRaw("fecha_envio::date as dia, de as telefono")
+        $ventanasServicio = Mensajes::selectRaw("TO_CHAR(fecha_envio, 'YYYY-MM-DD') as dia, de as telefono")
             ->where('id_agente', '!=', 1)
             ->whereBetween('fecha_envio', ["$desde 00:00:00", "$hasta 23:59:59"])
             ->groupBy('dia', 'telefono')
