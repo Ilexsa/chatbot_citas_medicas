@@ -6,6 +6,7 @@ use App\Models\Mensajes;
 use App\Models\RegistroUso;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ReporteCostosController extends Controller
 {
@@ -26,6 +27,47 @@ class ReporteCostosController extends Controller
     const COSTO_TEMPLATE      = 0.0315;
 
     /**
+     * GET /dashboard/costos — Vista Blade del dashboard de costos.
+     */
+    public function dashboard(Request $request)
+    {
+        $desde  = $request->get('desde', Carbon::now()->startOfMonth()->format('Y-m-d'));
+        $hasta  = $request->get('hasta', Carbon::now()->format('Y-m-d'));
+        $trmCop = (float) $request->get('trm', 4200);
+
+        $data = $this->calcularReporte($desde, $hasta, $trmCop);
+
+        // Datos diarios para la gráfica
+        $precioInput  = (float) env('GEMINI_PRICE_INPUT_PER_1M',  self::PRECIO_INPUT_DEFAULT);
+        $precioOutput = (float) env('GEMINI_PRICE_OUTPUT_PER_1M', self::PRECIO_OUTPUT_DEFAULT);
+
+        $porDia = RegistroUso::selectRaw('fecha, SUM(tokens_entrada) as tokens_entrada, SUM(tokens_salida) as tokens_salida, COUNT(*) as conversaciones')
+            ->whereBetween('fecha', [$desde, $hasta])
+            ->groupBy('fecha')
+            ->orderBy('fecha')
+            ->get()
+            ->map(function ($row) use ($precioInput, $precioOutput) {
+                $costo = (($row->tokens_entrada / 1_000_000) * $precioInput)
+                       + (($row->tokens_salida  / 1_000_000) * $precioOutput);
+                return [
+                    'fecha'          => $row->fecha->format('d/m'),
+                    'conversaciones' => $row->conversaciones,
+                    'costo_usd'      => round($costo, 5),
+                ];
+            });
+
+        // Top 10 usuarios por consumo de tokens
+        $topUsuarios = RegistroUso::selectRaw('telefono_usuario, SUM(tokens_entrada + tokens_salida) as total_tokens, COUNT(*) as conversaciones')
+            ->whereBetween('fecha', [$desde, $hasta])
+            ->groupBy('telefono_usuario')
+            ->orderByDesc('total_tokens')
+            ->limit(10)
+            ->get();
+
+        return view('dashboard.costos', compact('data', 'desde', 'hasta', 'trmCop', 'porDia', 'topUsuarios'));
+    }
+
+    /**
      * GET /api/reporte-costos?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&trm=4200
      *
      * Retorna el costo estimado de operar el chatbot en el período indicado.
@@ -33,10 +75,17 @@ class ReporteCostosController extends Controller
      */
     public function reporte(Request $request)
     {
-        $desde = $request->get('desde', Carbon::now()->startOfMonth()->format('Y-m-d'));
-        $hasta = $request->get('hasta', Carbon::now()->format('Y-m-d'));
+        $desde  = $request->get('desde', Carbon::now()->startOfMonth()->format('Y-m-d'));
+        $hasta  = $request->get('hasta', Carbon::now()->format('Y-m-d'));
         $trmCop = (float) $request->get('trm', 4200);
 
+        $data = $this->calcularReporte($desde, $hasta, $trmCop);
+
+        return response()->json(array_merge(['periodo' => ['desde' => $desde, 'hasta' => $hasta]], $data));
+    }
+
+    private function calcularReporte(string $desde, string $hasta, float $trmCop): array
+    {
         // ===================================================
         // GEMINI — tokens reales capturados en cada respuesta
         // ===================================================
@@ -57,17 +106,13 @@ class ReporteCostosController extends Controller
         // ===================================================
         // WHATSAPP — ventanas de conversación + templates
         // ===================================================
-
-        // Ventanas de servicio: agrupamos por (teléfono del usuario + día)
-        // Cada par único representa una ventana de 24h cobrada por Meta.
         $ventanasServicio = Mensajes::selectRaw("DATE(fecha_envio) as dia, de as telefono")
-            ->where('id_agente', '!=', 1)  // mensajes recibidos del usuario
+            ->where('id_agente', '!=', 1)
             ->whereBetween('fecha_envio', ["$desde 00:00:00", "$hasta 23:59:59"])
             ->groupBy('dia', 'telefono')
             ->get()
             ->count();
 
-        // Templates enviados: formularios de registro y cualquier mensaje tipo template
         $templatesEnviados = Mensajes::where('id_agente', 1)
             ->where('tipo', 'template')
             ->whereBetween('fecha_envio', ["$desde 00:00:00", "$hasta 23:59:59"])
@@ -82,19 +127,10 @@ class ReporteCostosController extends Controller
         // ===================================================
         $totalUsd = $costoGeminiUsd + $costoWhatsAppUsd;
 
-        $promUsdPorConv = $totalConversaciones > 0
-            ? round($totalUsd / $totalConversaciones, 6)
-            : 0;
+        $promUsdPorConv = $totalConversaciones > 0 ? round($totalUsd / $totalConversaciones, 6) : 0;
+        $promCopPorConv = $totalConversaciones > 0 ? round(($totalUsd * $trmCop) / $totalConversaciones) : 0;
 
-        $promCopPorConv = $totalConversaciones > 0
-            ? round(($totalUsd * $trmCop) / $totalConversaciones)
-            : 0;
-
-        return response()->json([
-            'periodo' => [
-                'desde' => $desde,
-                'hasta' => $hasta,
-            ],
+        return [
             'gemini_2_5_flash' => [
                 'conversaciones_registradas' => $totalConversaciones,
                 'total_llamadas_ia'          => $totalIteracionesIa,
@@ -123,11 +159,11 @@ class ReporteCostosController extends Controller
                 'costo_promedio_por_conversacion_usd' => $promUsdPorConv,
                 'costo_promedio_por_conversacion_cop' => $promCopPorConv,
                 'sugerencia_cotizacion'               => [
-                    'nota'         => 'Agrega al menos 3× el costo para cubrir operación, soporte y ganancia.',
+                    'nota'          => 'Agrega al menos 3× el costo para cubrir operación, soporte y ganancia.',
                     'precio_x3_usd' => round($totalUsd * 3, 2),
                     'precio_x3_cop' => (int) round($totalUsd * 3 * $trmCop),
                 ],
             ],
-        ]);
+        ];
     }
 }
