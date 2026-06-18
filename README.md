@@ -1,61 +1,146 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Asistente Virtual de Citas Médicas por WhatsApp (IA)
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Asistente médico automatizado que opera sobre **WhatsApp** y gestiona el ciclo completo de citas (consulta, agendamiento y cancelación) usando **Inteligencia Artificial**. Entiende lenguaje natural y ejecuta acciones reales sobre la base de datos de la clínica mediante **Function Calling**, minimizando la intervención humana.
 
-## About Laravel
+![PHP](https://img.shields.io/badge/PHP-8.x-777BB4?logo=php&logoColor=white)
+![Laravel](https://img.shields.io/badge/Laravel-FF2D20?logo=laravel&logoColor=white)
+![Gemini](https://img.shields.io/badge/Google%20Gemini%202.5%20Flash-4285F4?logo=google&logoColor=white)
+![WhatsApp](https://img.shields.io/badge/WhatsApp%20Cloud%20API-25D366?logo=whatsapp&logoColor=white)
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+---
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## ¿Qué hace?
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+Un paciente le escribe por WhatsApp como le escribiría a una persona ("hola, quiero una cita con el doctor Pérez para mañana") y el bot:
 
-## Learning Laravel
+- Lo identifica por su número y cédula (con registro automático si es nuevo).
+- Busca médicos por nombre o especialidad.
+- Calcula los turnos realmente disponibles evitando choques de horario.
+- Agenda, consulta o cancela la cita.
+- Sincroniza todo con el Google Calendar de la clínica en tiempo real.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+Todo en una conversación natural, sin formularios complejos ni códigos.
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
+---
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Características principales
 
-## Laravel Sponsors
+- **IA con Function Calling:** Google Gemini 2.5 Flash decide en cada mensaje si responde texto o ejecuta una de las 9 herramientas conectadas a la base de datos.
+- **Memoria conversacional:** carga los últimos 10 mensajes para mantener el hilo de la conversación (RAG básico).
+- **System prompt dinámico:** las reglas que recibe la IA cambian según si el paciente ya está validado o no.
+- **UI rica de WhatsApp:** usa listas interactivas (selección de médico) y Flows (formularios de registro), no solo texto plano.
+- **Algoritmo de disponibilidad propio:** genera bloques de 30 min en una ventana de 30 días y filtra colisiones con citas existentes.
+- **Sincronización con Google Calendar:** autenticación con Service Account (JWT RS256) implementada de forma nativa con `openssl`, sin librerías externas.
+- **Tracking de costos:** acumula el consumo de tokens de Gemini por conversación y expone un endpoint que estima el costo en USD/COP.
+- **Tolerancia a fallos:** límite de iteraciones de IA para evitar bucles, timeouts de red y `try/catch` con logging en cada acción crítica.
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+---
 
-### Premium Partners
+## Stack tecnológico
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+| Capa | Tecnología |
+|---|---|
+| Framework | Laravel (PHP) |
+| Base de datos | Eloquent ORM (PostgreSQL / MySQL) |
+| Motor de IA | Google Gemini 2.5 Flash |
+| Mensajería | WhatsApp Cloud API (Meta Graph API) |
+| Calendario | Google Calendar API (Service Account) |
+| Fechas / horarios | Carbon |
 
-## Contributing
+---
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Arquitectura del flujo
 
-## Code of Conduct
+```mermaid
+flowchart TD
+    A[Paciente escribe por WhatsApp] --> B[WebhookController]
+    B --> C[Persiste mensaje en BD]
+    C --> D[ChatBotController]
+    D --> E[Carga últimos 10 mensajes como memoria]
+    E --> F[Detecta paciente por teléfono]
+    F --> G[Construye System Prompt dinámico]
+    G --> H{Bucle IA - máx. 5 iteraciones}
+    H -->|Responde texto| K[Despacha respuesta a Meta]
+    H -->|Ejecuta acción| I[executeTool]
+    I --> J[(Base de datos)]
+    J --> H
+    K --> L[Guarda respuesta y tokens usados]
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+---
 
-## Security Vulnerabilities
+## Herramientas de IA (Function Calling)
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+| Herramienta | Descripción |
+|---|---|
+| `validar_paciente` | Busca paciente activo; vincula su teléfono automáticamente si falta (*Silent Login*) |
+| `registrar_paciente` | Crea o reactiva al paciente (upsert lógico) |
+| `consultar_medicos` | Búsqueda por nombre o especialidad, con limpieza de stop-words |
+| `consultar_turnos` | Ventana de 30 días, slots de 30 min y algoritmo de colisión |
+| `agendar_cita` | Doble validación de turno + re-chequeo de colisión antes de insertar |
+| `cancelar_cita` | Soft-delete a estado CANCELADA |
+| `consultar_mis_citas` | Citas futuras del paciente |
+| `enviar_lista_medicos` | Envía lista interactiva de WhatsApp |
+| `enviar_formulario_registro` | Envía un Flow (formulario) de registro |
 
-## License
+---
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+## Algoritmo de disponibilidad de turnos
+
+El cálculo de horas libres no es una simple consulta:
+
+1. Recorre día por día una ventana deslizante de 30 días hasta encontrar disponibilidad.
+2. Genera bloques de 30 minutos dentro del turno del médico (contempla turnos nocturnos que cruzan medianoche).
+3. Trae todas las citas existentes de ese día y descarta cualquier bloque que se intersecte con una cita ya agendada.
+4. Descarta bloques que ya pasaron en tiempo real.
+5. Devuelve solo los turnos 100% libres a la IA.
+
+---
+
+## Instalación
+
+```bash
+git clone https://github.com/Ilexsa/chatbot_citas_medicas.git
+cd chatbot_citas_medicas
+
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+
+# Entorno de desarrollo (servidor + queue + logs + Vite)
+composer run dev
+```
+
+### Variables de entorno requeridas
+
+```env
+# WhatsApp Cloud API (Meta)
+WHATSAPP_VERSION=v18.0
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_TOKEN=
+WHATSAPP_TOKEN_WEBHOOK=
+
+# Gemini AI
+GOOGLE_AI_API_KEY=
+
+# Google Calendar (Service Account)
+GOOGLE_SERVICE_ACCOUNT_JSON=
+GOOGLE_CALENDAR_ID=
+
+# Costos Gemini (opcional)
+GEMINI_PRICE_INPUT_PER_1M=0.15
+GEMINI_PRICE_OUTPUT_PER_1M=0.60
+```
+
+---
+
+## Documentación
+
+La lógica completa del controlador, las reglas de negocio y el detalle de cada herramienta están en [`DOCUMENTACION_LOGICA_CHATBOT.md`](DOCUMENTACION_LOGICA_CHATBOT.md).
+
+---
+
+## Estado del proyecto
+
+Proyecto funcional desarrollado como práctica de integración de IA, automatización y APIs de terceros (WhatsApp, Gemini, Google Calendar) sobre Laravel.
